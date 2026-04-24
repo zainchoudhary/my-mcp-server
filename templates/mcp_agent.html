@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Agent - AI Assistant with Tools</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background: #fff;
+            display: flex;
+            height: 100vh;
+        }
+
+        .sidebar {
+            width: 260px;
+            background: #f7f7f7;
+            border-right: 1px solid #d1d5db;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .new-chat-btn {
+            background: #fff;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            padding: 12px;
+            cursor: pointer;
+            font-weight: 500;
+            margin-bottom: 16px;
+            transition: all 0.2s;
+        }
+
+        .new-chat-btn:hover {
+            background: #f0f0f0;
+        }
+
+        .tools-section {
+            margin-top: 24px;
+            padding-top: 16px;
+            border-top: 1px solid #d1d5db;
+        }
+
+        .tools-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+
+        .tool-item {
+            font-size: 13px;
+            color: #555;
+            margin-bottom: 8px;
+            padding: 8px;
+            background: #f0f0f0;
+            border-radius: 6px;
+        }
+
+        .tool-name {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .tool-desc {
+            font-size: 12px;
+            color: #888;
+            margin-top: 2px;
+        }
+
+        .chat-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #fff;
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .message {
+            display: flex;
+            gap: 12px;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            justify-content: flex-end;
+        }
+
+        .message-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .message.user .message-avatar {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+
+        .message-content {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            background: #f0f0f0;
+            color: #333;
+            word-wrap: break-word;
+            line-height: 1.5;
+        }
+
+        .message.user .message-content {
+            background: #667eea;
+            color: white;
+        }
+
+        .tool-call {
+            background: #e3f2fd;
+            border-left: 4px solid #2196f3;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 8px 0;
+            font-size: 13px;
+        }
+
+        .tool-call-header {
+            font-weight: 600;
+            color: #1976d2;
+            margin-bottom: 4px;
+        }
+
+        .tool-result {
+            background: #e8f5e9;
+            border-left: 4px solid #4caf50;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 8px 0;
+            font-size: 13px;
+            color: #2e7d32;
+            font-family: 'Monaco', 'Menlo', monospace;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .input-area {
+            padding: 20px;
+            border-top: 1px solid #d1d5db;
+            display: flex;
+            gap: 12px;
+        }
+
+        textarea {
+            flex: 1;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 14px;
+            font-family: inherit;
+            resize: none;
+            max-height: 120px;
+            outline: none;
+        }
+
+        textarea:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background 0.2s;
+            height: fit-content;
+        }
+
+        button:hover:not(:disabled) {
+            background: #5568d3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .greeting {
+            background: #f0f0f0;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 16px 0;
+        }
+
+        .greeting-title {
+            font-weight: 600;
+            font-size: 16px;
+            margin-bottom: 8px;
+        }
+
+        .greeting-text {
+            font-size: 14px;
+            color: #555;
+            line-height: 1.6;
+        }
+
+        .loading {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .loading span {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #667eea;
+            animation: bounce 1.4s infinite;
+        }
+
+        .loading span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .loading span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes bounce {
+            0%, 60%, 100% {
+                opacity: 0.3;
+                transform: translateY(0);
+            }
+            30% {
+                opacity: 1;
+                transform: translateY(-10px);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <button class="new-chat-btn">+ New Chat</button>
+        <div class="tools-section" id="toolsSection" style="display: none;">
+            <div class="tools-title">Available Tools</div>
+            <div id="toolsList"></div>
+        </div>
+    </div>
+
+    <div class="chat-container">
+        <div class="messages" id="messages"></div>
+
+        <div class="input-area">
+            <textarea id="input" placeholder="Ask me anything... Try: current time, calculate something, reverse text, send email, etc." rows="1"></textarea>
+            <button id="sendBtn">Send</button>
+        </div>
+    </div>
+
+    <script>
+        const messagesDiv = document.getElementById('messages');
+        const inputField = document.getElementById('input');
+        const sendBtn = document.getElementById('sendBtn');
+        const toolsList = document.getElementById('toolsList');
+        const toolsSection = document.getElementById('toolsSection');
+
+        // Add greeting message
+        function addGreeting() {
+            const msg = document.createElement('div');
+            msg.className = 'message';
+            msg.innerHTML = `
+                <div class="message-avatar">🤖</div>
+                <div class="message-content">
+                    <div class="greeting">
+                        <div class="greeting-title">👋 Hello! I'm your MCP AI Agent</div>
+                        <div class="greeting-text">
+                            I can help you with:
+                            <ul style="margin-top: 8px; margin-left: 20px;">
+                                <li>Check current date and time</li>
+                                <li>Calculate math expressions</li>
+                                <li>Reverse or analyze text</li>
+                                <li>Generate random numbers</li>
+                                <li>Convert temperatures</li>
+                                <li>Send emails</li>
+                            </ul>
+                            What would you like me to do?
+                        </div>
+                    </div>
+                </div>
+            `;
+            messagesDiv.appendChild(msg);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // Load and display available tools
+        async function loadTools() {
+            try {
+                const response = await fetch('/tools');
+                const data = await response.json();
+                const tools = data.tools || [];
+                
+                if (tools.length > 0) {
+                    toolsSection.style.display = 'block';
+                    toolsList.innerHTML = tools.map(tool => `
+                        <div class="tool-item">
+                            <div class="tool-name">⚙️ ${tool.name}</div>
+                            <div class="tool-desc">${tool.description}</div>
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                console.error('Error loading tools:', error);
+            }
+        }
+
+        // Auto-resize textarea
+        inputField.addEventListener('input', () => {
+            inputField.style.height = 'auto';
+            inputField.style.height = Math.min(inputField.scrollHeight, 120) + 'px';
+        });
+
+        // Send on Enter (Shift+Enter for newline)
+        inputField.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        sendBtn.addEventListener('click', sendMessage);
+
+        function addMessage(text, role, isError = false) {
+            const msg = document.createElement('div');
+            msg.className = `message ${role}`;
+            
+            const avatar = document.createElement('div');
+            avatar.className = 'message-avatar';
+            avatar.textContent = role === 'user' ? 'You' : '🤖';
+            
+            const content = document.createElement('div');
+            content.className = 'message-content';
+            content.textContent = text;
+            
+            msg.appendChild(avatar);
+            msg.appendChild(content);
+            
+            if (isError) {
+                content.style.background = '#fee2e2';
+                content.style.color = '#991b1b';
+            }
+            
+            messagesDiv.appendChild(msg);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function addToolCall(toolName, args) {
+            const msg = document.createElement('div');
+            msg.className = 'message';
+            
+            const avatar = document.createElement('div');
+            avatar.className = 'message-avatar';
+            avatar.textContent = '🔧';
+            
+            const content = document.createElement('div');
+            content.className = 'message-content';
+            content.innerHTML = `
+                <div class="tool-call">
+                    <div class="tool-call-header">🔧 Calling tool: ${toolName}</div>
+                    <div>Arguments: ${JSON.stringify(args, null, 2)}</div>
+                </div>
+            `;
+            
+            msg.appendChild(avatar);
+            msg.appendChild(content);
+            messagesDiv.appendChild(msg);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function addToolResult(result) {
+            const msg = document.createElement('div');
+            msg.className = 'message';
+            
+            const avatar = document.createElement('div');
+            avatar.className = 'message-avatar';
+            avatar.textContent = '📊';
+            
+            const content = document.createElement('div');
+            content.className = 'message-content';
+            content.innerHTML = `<div class="tool-result">${result}</div>`;
+            
+            msg.appendChild(avatar);
+            msg.appendChild(content);
+            messagesDiv.appendChild(msg);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const message = inputField.value.trim();
+            if (!message) return;
+
+            addMessage(message, 'user');
+            inputField.value = '';
+            inputField.style.height = 'auto';
+            sendBtn.disabled = true;
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                if (data.tool_call) {
+                    addToolCall(data.tool_call.tool, data.tool_call.arguments);
+                }
+
+                if (data.tool_result) {
+                    addToolResult(data.tool_result);
+                }
+
+                if (data.final_answer) {
+                    addMessage(data.final_answer, 'assistant');
+                }
+            } catch (error) {
+                addMessage(`Error: ${error.message}`, 'assistant', true);
+            } finally {
+                sendBtn.disabled = false;
+                inputField.focus();
+            }
+        }
+
+        // Initialize
+        addGreeting();
+        loadTools();
+    </script>
+</body>
+</html>

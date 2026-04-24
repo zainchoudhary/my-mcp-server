@@ -4,3 +4,4 @@ requests
 groq
 python-dotenv
 rich
+mcp[cli]>=1.0.0
