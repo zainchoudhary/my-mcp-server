@@ -61,101 +61,105 @@ class MCPClientSync:
             return {"error": str(e)}
     
     def get_tools(self):
-        """Get available tools - hardcoded based on mcp_proper_server.py"""
+        """Discover tools via JSON-RPC tools/list (MCP protocol) with fallback"""
         if self.tools_cache:
             return self.tools_cache
         
-        # Hardcoded tools list - matches mcp_proper_server.py @mcp.tool() definitions
-        self.tools_cache = [
-            {
-                "name": "get_current_time",
-                "description": "Returns the current date and time.",
+        # First, try JSON-RPC tools/list (proper MCP)
+        response = self.send_request("tools/list")
+        
+        # If JSON-RPC tools/list works, use it
+        if "result" in response and "tools" in response.get("result", {}):
+            self.tools_cache = response["result"]["tools"]
+            return self.tools_cache
+        
+        # Fallback: Direct import of tool schemas (for FastMCP compatibility)
+        print("[INFO] JSON-RPC tools/list not available, using direct schema import", file=sys.stderr)
+        from mcp_proper_server import (
+            get_current_time, calculate, reverse_text, count_words,
+            random_number, convert_temperature, email_tool
+        )
+        
+        # Extract schemas from function annotations
+        import inspect
+        tools_list = []
+        for func in [get_current_time, calculate, reverse_text, count_words, random_number, convert_temperature, email_tool]:
+            sig = inspect.signature(func)
+            params = {}
+            required = []
+            for param_name, param in sig.parameters.items():
+                if param.annotation != inspect.Parameter.empty:
+                    # Map Python types to JSON schema types
+                    type_map = {
+                        str: "string",
+                        int: "integer",
+                        float: "number",
+                        bool: "boolean",
+                        list: "array",
+                    }
+                    param_type = type_map.get(param.annotation, "string")
+                    
+                    # Special handling for email_tool parameters
+                    if func.__name__ == "email_tool":
+                        if param_name == "to":
+                            params[param_name] = {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "List of recipient email addresses"
+                            }
+                        elif param_name == "confirm":
+                            params[param_name] = {
+                                "type": "boolean",
+                                "description": "Confirm sending the email"
+                            }
+                        elif param_name == "max_retries":
+                            params[param_name] = {
+                                "type": "integer",
+                                "description": "Number of retries (default: 3)"
+                            }
+                        else:
+                            params[param_name] = {"type": param_type}
+                    else:
+                        params[param_name] = {"type": param_type}
+                    
+                    if param.default == inspect.Parameter.empty:
+                        required.append(param_name)
+            
+            tools_list.append({
+                "name": func.__name__,
+                "description": func.__doc__ or "Tool",
                 "inputSchema": {
                     "type": "object",
-                    "properties": {},
-                    "required": []
+                    "properties": params,
+                    "required": required
                 }
-            },
-            {
-                "name": "calculate",
-                "description": "Evaluate a simple math expression. Example: '2 + 2', '10 * 5', '100 / 4'",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "expression": {"type": "string"}
-                    },
-                    "required": ["expression"]
-                }
-            },
-            {
-                "name": "reverse_text",
-                "description": "Reverses any given text.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string"}
-                    },
-                    "required": ["text"]
-                }
-            },
-            {
-                "name": "count_words",
-                "description": "Counts words, characters, and sentences in the given text.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string"}
-                    },
-                    "required": ["text"]
-                }
-            },
-            {
-                "name": "random_number",
-                "description": "Generate a random number between min_val and max_val.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "min_val": {"type": "integer", "default": 1},
-                        "max_val": {"type": "integer", "default": 100}
-                    },
-                    "required": []
-                }
-            },
-            {
-                "name": "convert_temperature",
-                "description": "Convert temperature between Celsius, Fahrenheit, and Kelvin.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "value": {"type": "number"},
-                        "from_unit": {"type": "string", "enum": ["C", "F", "K"]}
-                    },
-                    "required": ["value", "from_unit"]
-                }
-            },
-            {
-                "name": "email_tool",
-                "description": "Send an email using SMTP. Use list of email addresses for 'to' parameter.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "to": {"type": "string"},
-                        "subject": {"type": "string"},
-                        "message": {"type": "string"},
-                        "confirm": {"type": "boolean", "default": False}
-                    },
-                    "required": ["to", "subject", "message"]
-                }
-            }
-        ]
-        return self.tools_cache
+            })
+        
+        self.tools_cache = tools_list
+        return tools_list
     
     def call_tool(self, tool_name: str, arguments: Dict) -> str:
-        """Execute a tool by directly calling the function"""
+        """Execute tool via JSON-RPC tools/call (MCP protocol) with fallback"""
+        # First, try JSON-RPC tools/call (proper MCP)
+        response = self.send_request("tools/call", {
+            "name": tool_name,
+            "arguments": arguments
+        })
+        
+        # If JSON-RPC works and returns a result, use it
+        if "result" in response:
+            result = response["result"]
+            if isinstance(result, dict):
+                if "text" in result:
+                    return result["text"]
+                if "content" in result and isinstance(result["content"], list) and len(result["content"]) > 0:
+                    if isinstance(result["content"][0], dict) and "text" in result["content"][0]:
+                        return result["content"][0]["text"]
+            return str(result)
+        
+        # Fallback: Direct function import (for FastMCP compatibility)
+        print(f"[INFO] JSON-RPC tools/call not available, using direct function import", file=sys.stderr)
         try:
-            # Import the tool functions directly
-            import sys
-            sys.path.insert(0, '.')
             from mcp_proper_server import (
                 get_current_time, calculate, reverse_text, count_words,
                 random_number, convert_temperature, email_tool
@@ -175,11 +179,28 @@ class MCPClientSync:
                 return f"Error: Tool '{tool_name}' not found"
             
             tool_func = tools_map[tool_name]
+            
+            # Convert parameters to correct types for email_tool
+            if tool_name == "email_tool":
+                if "to" in arguments:
+                    # Convert to to a list if it's a string
+                    if isinstance(arguments["to"], str):
+                        arguments["to"] = [arguments["to"]]
+                if "confirm" in arguments:
+                    # Convert confirm to boolean
+                    if isinstance(arguments["confirm"], str):
+                        arguments["confirm"] = arguments["confirm"].lower() in ("yes", "true", "1")
+                if "max_retries" in arguments:
+                    # Convert max_retries to int
+                    if isinstance(arguments["max_retries"], str):
+                        arguments["max_retries"] = int(arguments["max_retries"])
+            
             result = tool_func(**arguments)
             return str(result)
             
         except Exception as e:
-            return f"Error executing tool: {str(e)}"
+            error = response.get("error", {}).get("message", str(e))
+            return f"Error: {error}"
 
 
 # ==============================================================================
