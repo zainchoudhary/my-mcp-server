@@ -1,59 +1,95 @@
-# --- Todo App Auth Helper ---
+import inspect
 import requests
-
-_todo_token = None
-
-def todo_login(email: str, password: str) -> str:
-    """Login to Todo app and return access token."""
-    global _todo_token
-    url = "http://127.0.0.1:8000/login"
-    try:
-        res = requests.post(url, json={"email": email, "password": password})
-        data = res.json()
-        if "access_token" in data:
-            _todo_token = data["access_token"]
-            return _todo_token
-        else:
-            raise Exception(data.get("detail", "Login failed"))
-    except Exception as e:
-        raise Exception(f"Login error: {e}")
-
-def get_auth_header():
-    if not _todo_token:
-        raise Exception("Not logged in. Please call todo_login first.")
-    return {"Authorization": f"Bearer {_todo_token}"}
-
-from mcp.server.fastmcp import FastMCP
 from datetime import datetime
 import random
-
-# Load environment variables from .env
 from dotenv import load_dotenv
-load_dotenv()
-
 import os
 import logging
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Union, List, Dict
+from typing import Union, List, Dict, Callable
 from time import sleep
 import re
 import asyncio
+import json
 
+from fastapi import FastAPI, Body, HTTPException
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+import uvicorn
+from groq import Groq
 
-mcp = FastMCP("My Python MCP Server")
+# Load environment variables from .env
+load_dotenv()
+
+# ==============================================================================
+# == Custom Tool Registry (Replaces MCP)
+# ==============================================================================
+
+TOOL_REGISTRY = {}
+
+def get_type_name(t):
+    """Gets the JSON schema type name for a Python type."""
+    if t == str:
+        return "string"
+    if t == int:
+        return "integer"
+    if t == float:
+        return "number"
+    if t == bool:
+        return "boolean"
+    if hasattr(t, '__origin__'):
+        if t.__origin__ == list:
+            return "array"
+        if t.__origin__ == Union:
+            return get_type_name(t.__args__[0])
+    return "string"
+
+def register_tool(func: Callable):
+    """
+    A decorator to register a function as a tool, automatically generating its
+    JSON schema for the LLM.
+    """
+    tool_name = func.__name__
+    description = func.__doc__.strip() if func.__doc__ else ""
+
+    sig = inspect.signature(func)
+    parameters = {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    }
+
+    for name, param in sig.parameters.items():
+        param_type = get_type_name(param.annotation)
+        parameters["properties"][name] = {
+            "type": param_type,
+            "description": f"Parameter '{name}'",
+        }
+        if param.default == inspect.Parameter.empty:
+            parameters["required"].append(name)
+
+    TOOL_REGISTRY[tool_name] = {
+        "function": func,
+        "schema": {
+            "name": tool_name,
+            "description": description,
+            "parameters": parameters,
+        }
+    }
+    return func
 
 
 # ── Tool 1: Get current date & time ──────
-@mcp.tool()
+@register_tool
 def get_current_time() -> str:
     """Returns the current date and time."""
     return f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
 
 # ── Tool 2: Calculator ────────────────────
-@mcp.tool()
+@register_tool
 def calculate(expression: str) -> str:
     """
     Evaluate a simple math expression.
@@ -70,14 +106,14 @@ def calculate(expression: str) -> str:
 
 
 # ── Tool 3: Reverse text ──────────────────
-@mcp.tool()
+@register_tool
 def reverse_text(text: str) -> str:
     """Reverses any given text."""
     return f"Original : {text}\nReversed : {text[::-1]}"
 
 
 # ── Tool 4: Word counter ──────────────────
-@mcp.tool()
+@register_tool
 def count_words(text: str) -> str:
     """Counts words, characters, and sentences in the given text."""
     words      = len(text.split())
@@ -91,7 +127,7 @@ def count_words(text: str) -> str:
 
 
 # ── Tool 5: Random number generator ──────
-@mcp.tool()
+@register_tool
 def random_number(min_val: int = 1, max_val: int = 100) -> str:
     """Generate a random number between min_val and max_val."""
     number = random.randint(min_val, max_val)
@@ -99,7 +135,7 @@ def random_number(min_val: int = 1, max_val: int = 100) -> str:
 
 
 # ── Tool 6: Temperature converter ────────
-@mcp.tool()
+@register_tool
 def convert_temperature(value: float, from_unit: str) -> str:
     """
     Convert temperature between Celsius, Fahrenheit, and Kelvin.
@@ -127,7 +163,7 @@ def is_valid_email(email: str) -> bool:
     pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
     return re.match(pattern, email) is not None
 
-@mcp.tool()
+@register_tool
 def email_tool(
     to: Union[str, List[str]],
     subject: str,
@@ -224,8 +260,172 @@ def email_tool(
 
     return {"success": False, "error": "Failed after retries"}
 
-# ───────────────────────────────────────────
-#  Start the server (stdio = Claude Desktop)
-# ───────────────────────────────────────────
+# ==============================================================================
+# == FastAPI Server Implementation
+# ==============================================================================
+# == FastAPI Server Implementation
+# ==============================================================================
+app = FastAPI()
+
+# Setup Groq client
+groq_api_key = os.getenv("GROQ_API_KEY")
+if groq_api_key:
+    groq_client = Groq(api_key=groq_api_key)
+else:
+    groq_client = None
+
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+# Conversation history per session
+chat_history = []
+
+SYSTEM_PROMPT = """You are a helpful AI assistant with access to tools.
+
+Available tools:
+{tools_json}
+
+Instructions:
+1. Understand the user's request
+2. If a tool is needed, respond with ONLY valid JSON:
+{{"tool": "tool_name", "arguments": {{"param": "value"}}}}
+
+3. If no tool needed or after getting tool result, respond with:
+{{"final_answer": "Your response"}}
+
+STRICT: Always respond with valid JSON only. No other text."""
+
+@app.get("/")
+async def root():
+    """Serve the web UI"""
+    return FileResponse("templates/index.html")
+
+@app.post("/chat")
+async def chat(request: Dict):
+    """Chat endpoint that processes user messages and calls tools"""
+    global chat_history
+    
+    user_message = request.get("message", "").strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Message required")
+    
+    if not groq_client:
+        raise HTTPException(status_code=500, detail="Groq API key not configured")
+    
+    try:
+        # Add user message to history
+        chat_history.append({"role": "user", "content": user_message})
+        
+        # Get available tools
+        tools_list = [tool["schema"] for tool in TOOL_REGISTRY.values()]
+        tools_json = json.dumps(tools_list, indent=2)
+        system_prompt = SYSTEM_PROMPT.format(tools_json=tools_json)
+        
+        # Call LLM
+        messages = [{"role": "system", "content": system_prompt}] + chat_history
+        
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=messages,
+            temperature=0.1,
+            response_format={"type": "json_object"}
+        )
+        
+        llm_response_text = response.choices[0].message.content
+        
+        try:
+            llm_decision = json.loads(llm_response_text)
+        except json.JSONDecodeError:
+            return JSONResponse({
+                "final_answer": "I had trouble processing that. Please try again."
+            })
+        
+        result = {
+            "tool_call": None,
+            "tool_result": None,
+            "final_answer": None
+        }
+        
+        # Handle tool call
+        if "tool" in llm_decision:
+            tool_name = llm_decision["tool"]
+            arguments = llm_decision.get("arguments", {})
+            
+            result["tool_call"] = {
+                "tool": tool_name,
+                "arguments": arguments
+            }
+            
+            # Execute tool
+            if tool_name in TOOL_REGISTRY:
+                tool_func = TOOL_REGISTRY[tool_name]["function"]
+                try:
+                    tool_result = tool_func(**arguments)
+                    result["tool_result"] = str(tool_result)
+                    
+                    # Add to history
+                    chat_history.append({"role": "assistant", "content": llm_response_text})
+                    chat_history.append({"role": "user", "content": f"Tool '{tool_name}' returned: {tool_result}"})
+                    
+                    # Call LLM again to generate final answer
+                    messages = [{"role": "system", "content": system_prompt}] + chat_history
+                    
+                    response2 = groq_client.chat.completions.create(
+                        model=GROQ_MODEL,
+                        messages=messages,
+                        temperature=0.1,
+                        response_format={"type": "json_object"}
+                    )
+                    
+                    final_response_text = response2.choices[0].message.content
+                    final_decision = json.loads(final_response_text)
+                    
+                    if "final_answer" in final_decision:
+                        result["final_answer"] = final_decision["final_answer"]
+                        chat_history.append({"role": "assistant", "content": final_response_text})
+                
+                except Exception as e:
+                    result["tool_result"] = f"Error: {str(e)}"
+                    result["final_answer"] = f"Tool execution failed: {str(e)}"
+            else:
+                result["tool_result"] = f"Tool '{tool_name}' not found"
+                result["final_answer"] = f"I couldn't find the tool '{tool_name}'"
+        
+        # Handle final answer (no tool needed)
+        elif "final_answer" in llm_decision:
+            result["final_answer"] = llm_decision["final_answer"]
+            chat_history.append({"role": "assistant", "content": llm_response_text})
+        
+        # Trim chat history to keep it manageable
+        if len(chat_history) > 20:
+            chat_history = chat_history[-20:]
+        
+        return JSONResponse(result)
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools")
+async def get_tools():
+    """Endpoint to list all available tools."""
+    return JSONResponse(content=[tool["schema"] for tool in TOOL_REGISTRY.values()])
+
+@app.post("/tools/{tool_name}")
+async def execute_tool(tool_name: str, arguments: Dict = Body(...)):
+    """Endpoint to execute a specific tool."""
+    if tool_name not in TOOL_REGISTRY:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found.")
+    
+    tool_info = TOOL_REGISTRY[tool_name]
+    func = tool_info["function"]
+    
+    try:
+        result = func(**arguments)
+        return JSONResponse(content={"result": result})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error executing tool '{tool_name}': {str(e)}")
+
+# ==============================================================================
+# == Run the server using Uvicorn
+# ==============================================================================
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    uvicorn.run(app, host="127.0.0.1", port=8000)
