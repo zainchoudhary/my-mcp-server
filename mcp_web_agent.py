@@ -36,6 +36,43 @@ class MCPClientSync:
         )
         self.request_id = 0
         self.tools_cache = None
+        self.initialized = False
+        
+        # Initialize the MCP connection immediately
+        self._initialize()
+        
+    def _initialize(self):
+        """Perform MCP initialization handshake"""
+        if self.initialized:
+            return
+        
+        try:
+            init_request = {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "MCP Web Agent",
+                        "version": "1.0.0"
+                    }
+                }
+            }
+            
+            json.dump(init_request, self.process.stdin)
+            self.process.stdin.write('\n')
+            self.process.stdin.flush()
+            
+            response_line = self.process.stdout.readline()
+            if response_line.strip():
+                response = json.loads(response_line)
+                if "result" in response:
+                    self.initialized = True
+                    print("[✅] MCP initialized successfully via JSON-RPC", file=sys.stderr)
+        except Exception as e:
+            print(f"[⚠️] MCP initialization failed: {e}", file=sys.stderr)
         
     def send_request(self, method: str, params: Optional[Dict] = None) -> Dict:
         """Send JSON-RPC request to MCP server"""
@@ -61,20 +98,21 @@ class MCPClientSync:
             return {"error": str(e)}
     
     def get_tools(self):
-        """Discover tools via JSON-RPC tools/list (MCP protocol) with fallback"""
+        """Discover tools via JSON-RPC tools/list (MCP protocol)"""
         if self.tools_cache:
             return self.tools_cache
         
-        # First, try JSON-RPC tools/list (proper MCP)
-        response = self.send_request("tools/list")
+        # Use JSON-RPC tools/list (proper MCP - after initialize)
+        if self.initialized:
+            response = self.send_request("tools/list")
+            
+            if "result" in response and "tools" in response.get("result", {}):
+                self.tools_cache = response["result"]["tools"]
+                print("[✅] Tools retrieved via JSON-RPC", file=sys.stderr)
+                return self.tools_cache
         
-        # If JSON-RPC tools/list works, use it
-        if "result" in response and "tools" in response.get("result", {}):
-            self.tools_cache = response["result"]["tools"]
-            return self.tools_cache
-        
-        # Fallback: Direct import of tool schemas (for FastMCP compatibility)
-        print("[INFO] JSON-RPC tools/list not available, using direct schema import", file=sys.stderr)
+        # Fallback: Direct import of tool schemas (for backup compatibility)
+        print("[INFO] Using direct schema import (fallback)", file=sys.stderr)
         from mcp_proper_server import (
             get_current_time, calculate, reverse_text, count_words,
             random_number, convert_temperature, email_tool
@@ -139,26 +177,43 @@ class MCPClientSync:
         return tools_list
     
     def call_tool(self, tool_name: str, arguments: Dict) -> str:
-        """Execute tool via JSON-RPC tools/call (MCP protocol) with fallback"""
-        # First, try JSON-RPC tools/call (proper MCP)
-        response = self.send_request("tools/call", {
-            "name": tool_name,
-            "arguments": arguments
-        })
+        """Execute tool via JSON-RPC tools/call (MCP protocol)"""
+        # First, try JSON-RPC tools/call (proper MCP - after initialize)
+        if self.initialized:
+            response = self.send_request("tools/call", {
+                "name": tool_name,
+                "arguments": arguments
+            })
+            
+            # Extract result from MCP response format
+            if "result" in response:
+                result = response["result"]
+                
+                # MCP returns content in different formats
+                if isinstance(result, dict):
+                    # Format 1: {"content": [...], "isError": false}
+                    if "content" in result and isinstance(result["content"], list):
+                        for item in result["content"]:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                print("[✅] Tool executed via JSON-RPC", file=sys.stderr)
+                                return item.get("text", "")
+                    
+                    # Format 2: {"result": "..."}
+                    if "result" in result:
+                        print("[✅] Tool executed via JSON-RPC", file=sys.stderr)
+                        return str(result["result"])
+                    
+                    # Format 3: {"structuredContent": {"result": "..."}}
+                    if "structuredContent" in result and "result" in result["structuredContent"]:
+                        print("[✅] Tool executed via JSON-RPC", file=sys.stderr)
+                        return str(result["structuredContent"]["result"])
+                
+                # Fallback: return as string
+                print("[✅] Tool executed via JSON-RPC", file=sys.stderr)
+                return str(result)
         
-        # If JSON-RPC works and returns a result, use it
-        if "result" in response:
-            result = response["result"]
-            if isinstance(result, dict):
-                if "text" in result:
-                    return result["text"]
-                if "content" in result and isinstance(result["content"], list) and len(result["content"]) > 0:
-                    if isinstance(result["content"][0], dict) and "text" in result["content"][0]:
-                        return result["content"][0]["text"]
-            return str(result)
-        
-        # Fallback: Direct function import (for FastMCP compatibility)
-        print(f"[INFO] JSON-RPC tools/call not available, using direct function import", file=sys.stderr)
+        # Fallback: Direct function import (for backup compatibility)
+        print(f"[INFO] Using direct function import (fallback)", file=sys.stderr)
         try:
             from mcp_proper_server import (
                 get_current_time, calculate, reverse_text, count_words,
@@ -183,15 +238,12 @@ class MCPClientSync:
             # Convert parameters to correct types for email_tool
             if tool_name == "email_tool":
                 if "to" in arguments:
-                    # Convert to to a list if it's a string
                     if isinstance(arguments["to"], str):
                         arguments["to"] = [arguments["to"]]
                 if "confirm" in arguments:
-                    # Convert confirm to boolean
                     if isinstance(arguments["confirm"], str):
                         arguments["confirm"] = arguments["confirm"].lower() in ("yes", "true", "1")
                 if "max_retries" in arguments:
-                    # Convert max_retries to int
                     if isinstance(arguments["max_retries"], str):
                         arguments["max_retries"] = int(arguments["max_retries"])
             
@@ -199,7 +251,7 @@ class MCPClientSync:
             return str(result)
             
         except Exception as e:
-            error = response.get("error", {}).get("message", str(e))
+            error = response.get("error", {}).get("message", str(e)) if isinstance(response, dict) else str(e)
             return f"Error: {error}"
 
 

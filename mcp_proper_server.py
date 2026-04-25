@@ -172,7 +172,9 @@ if __name__ == "__main__":
     print("   5. random_number(min_val, max_val)", file=sys.stderr)
     print("   6. convert_temperature(value, from_unit)", file=sys.stderr)
     print("   7. email_tool(to, subject, message, max_retries, confirm)", file=sys.stderr)
+    print("✅ JSON-RPC Protocol: ENABLED", file=sys.stderr)
     print("", file=sys.stderr)
     
     # Run on stdio transport (MCP standard)
+    # This enables JSON-RPC 2.0 over stdio for proper MCP protocol
     mcp.run(transport="stdio")
