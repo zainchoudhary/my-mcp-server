@@ -273,6 +273,147 @@
             box-shadow: 0 0 15px var(--accent-blue);
         }
 
+        .btn-icon {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            border: 1px solid var(--glass-border);
+            background: rgba(139, 92, 246, 0.1);
+            color: var(--accent-purple);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+
+        .btn-icon:hover {
+            background: rgba(139, 92, 246, 0.2);
+            border-color: var(--accent-purple);
+            transform: scale(1.05);
+        }
+
+        /* Modal for Tool Selection */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(5px);
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .modal-content {
+            background: var(--sidebar-color);
+            margin: auto;
+            margin-top: 15%;
+            padding: 30px;
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--glass-border);
+        }
+
+        .modal-header h2 {
+            color: var(--accent-purple);
+            font-size: 20px;
+        }
+
+        .close-modal {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 28px;
+            cursor: pointer;
+            transition: color 0.3s;
+        }
+
+        .close-modal:hover {
+            color: var(--accent-blue);
+        }
+
+        .tool-options {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .tool-option {
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tool-option:hover {
+            background: rgba(139, 92, 246, 0.2);
+            border-color: var(--accent-purple);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(139, 92, 246, 0.2);
+        }
+
+        .tool-option.connected {
+            background: rgba(16, 185, 129, 0.1);
+            border-color: rgba(16, 185, 129, 0.4);
+        }
+
+        .tool-option.connected:hover {
+            background: rgba(16, 185, 129, 0.2);
+            border-color: #10b981;
+        }
+
+        .tool-option-icon {
+            font-size: 28px;
+        }
+
+        .tool-option-name {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+            text-transform: capitalize;
+        }
+
         /* Custom Scrollbar */
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
@@ -299,9 +440,21 @@
 
         <div class="input-area">
             <div class="input-wrapper">
+                <button class="btn-icon" id="toolsBtn" title="Connect Tools">➕</button>
                 <textarea id="input" placeholder="Enter a command..." rows="1"></textarea>
                 <button id="sendBtn"><i class="fas fa-paper-plane"></i></button>
             </div>
+        </div>
+    </div>
+
+    <!-- Tool Selection Modal -->
+    <div id="toolModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>🔧 Connect Tools</h2>
+                <button class="close-modal" onclick="closeToolModal()">&times;</button>
+            </div>
+            <div class="tool-options" id="toolOptions"></div>
         </div>
     </div>
 
@@ -310,8 +463,14 @@
         const messagesDiv = document.getElementById('messages');
         const inputField = document.getElementById('input');
         const sendBtn = document.getElementById('sendBtn');
+        const toolsBtn = document.getElementById('toolsBtn');
+        const toolModal = document.getElementById('toolModal');
+        const toolOptions = document.getElementById('toolOptions');
         const toolsList = document.getElementById('toolsList');
         const toolsSection = document.getElementById('toolsSection');
+
+        let availableTools = [];
+        let connectedTools = [];
 
         const toolIcons = {
             'get_current_time': '⏰',
@@ -323,6 +482,27 @@
             'email_tool': '📧'
         };
 
+        const toolDescriptions = {
+            'get_current_time': 'Get current date and time',
+            'calculate': 'Perform mathematical calculations',
+            'reverse_text': 'Reverse any text string',
+            'count_words': 'Count words in text',
+            'random_number': 'Generate random numbers',
+            'convert_temperature': 'Convert temperature units',
+            'email_tool': 'Send emails'
+        };
+
+        const toolKeywords = {
+            'get_current_time': ['what time', 'what date', 'current time', 'current date', 'what is the time'],
+            'calculate': ['calculate', 'compute', '+', '-', '*', '/', 'add', 'subtract', 'multiply', 'divide', 'sum', 'total', 'equals'],
+            'reverse_text': ['reverse', 'reversed'],
+            'count_words': ['count words', 'word count', 'how many words'],
+            'random_number': ['random', 'random number'],
+            'convert_temperature': ['temperature', 'celsius', 'fahrenheit', 'convert'],
+            'email_tool': ['send email', 'send mail', 'email to']
+        };
+
+
         function addGreeting() {
             addMessage("Neural connection active. I am ready to process your commands. How can I assist?", "assistant");
         }
@@ -331,11 +511,11 @@
             try {
                 const response = await fetch('/tools');
                 const data = await response.json();
-                const tools = data.tools || [];
+                availableTools = data.tools || [];
                 
-                if (tools.length > 0) {
+                if (availableTools.length > 0) {
                     toolsSection.style.display = 'block';
-                    toolsList.innerHTML = tools.map(tool => `
+                    toolsList.innerHTML = availableTools.map(tool => `
                         <div class="tool-item">
                             <div class="tool-name">
                                 <span>${toolIcons[tool.name] || '⚙️'}</span>
@@ -343,9 +523,90 @@
                             </div>
                         </div>
                     `).join('');
+
+                    // Populate tool modal options
+                    populateToolOptions();
                 }
             } catch (error) { console.error('Error loading tools:', error); }
         }
+
+        function populateToolOptions() {
+            toolOptions.innerHTML = availableTools.map(tool => {
+                const isConnected = isToolConnected(tool.name);
+                const connectedBadge = isConnected ? '✅ CONNECTED' : 'CLICK TO CONNECT';
+                return `
+                    <div class="tool-option ${isConnected ? 'connected' : ''}" onclick="connectTool('${tool.name}')">
+                        <div class="tool-option-icon">${toolIcons[tool.name] || '⚙️'}</div>
+                        <div class="tool-option-name">${tool.name.replace(/_/g, ' ')}</div>
+                        <div style="font-size: 10px; color: ${isConnected ? '#10b981' : '#94a3b8'}; margin-top: 4px;">
+                            ${connectedBadge}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function openToolModal() {
+            toolModal.style.display = 'block';
+        }
+
+        function closeToolModal() {
+            toolModal.style.display = 'none';
+        }
+
+        function connectTool(toolName) {
+            if (!connectedTools.includes(toolName)) {
+                connectedTools.push(toolName);
+                closeToolModal();
+                
+                // Show confirmation message
+                const toolIcon = toolIcons[toolName] || '⚙️';
+                const toolDisplayName = toolName.replace(/_/g, ' ');
+                addMessage(
+                    `${toolIcon} "${toolDisplayName.toUpperCase()}" tool connected successfully. Will auto-trigger when relevant.`,
+                    'assistant'
+                );
+                
+                // Update tool modal to show connected status
+                populateToolOptions();
+            }
+        }
+
+        function disconnectTool(toolName) {
+            connectedTools = connectedTools.filter(t => t !== toolName);
+            populateToolOptions();
+        }
+
+        function isToolConnected(toolName) {
+            return connectedTools.includes(toolName);
+        }
+
+        function detectToolFromMessage(message) {
+            const messageLower = message.toLowerCase().trim();
+            // Only detect tool if it's one of the connected tools
+            for (const tool of connectedTools) {
+                if (toolKeywords[tool]) {
+                    for (const keyword of toolKeywords[tool]) {
+                        // Exact match or word boundary match
+                        const regex = new RegExp('\\b' + keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+                        if (regex.test(messageLower)) {
+                            return tool;
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        // Click on plus button to open modal
+        toolsBtn.addEventListener('click', openToolModal);
+
+        // Close modal when clicking outside
+        window.addEventListener('click', (event) => {
+            if (event.target === toolModal) {
+                closeToolModal();
+            }
+        });
 
         inputField.addEventListener('input', () => {
             inputField.style.height = 'auto';
@@ -418,10 +679,22 @@
             sendBtn.disabled = true;
 
             try {
+                // Detect which tool to use from message
+                let detectedTool = detectToolFromMessage(message);
+                
+                // If a tool was detected in connected tools, show it
+                if (detectedTool && isToolConnected(detectedTool)) {
+                    addToolCall(detectedTool, {});
+                }
+                
+                // Always send the full list of connected tools to backend for enforcement
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message })
+                    body: JSON.stringify({ 
+                        message,
+                        connected_tools: connectedTools
+                    })
                 });
 
                 const data = await response.json();

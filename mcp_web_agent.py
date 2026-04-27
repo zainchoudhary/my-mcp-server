@@ -328,6 +328,8 @@ async def chat(request: Dict):
         raise HTTPException(status_code=500, detail="Services not initialized")
     
     user_message = request.get("message", "").strip()
+    connected_tools = request.get("connected_tools", [])
+    
     if not user_message:
         raise HTTPException(status_code=400, detail="Message required")
     
@@ -336,7 +338,18 @@ async def chat(request: Dict):
         chat_history.append({"role": "user", "content": user_message})
         
         # Get tools and build prompt
-        tools = mcp_client.get_tools()
+        all_tools = mcp_client.get_tools()
+        
+        # Filter tools - ONLY use connected tools if any are connected
+        if connected_tools:
+            tools = [t for t in all_tools if t["name"] in connected_tools]
+            available_tool_names = ", ".join([t.replace("_", " ").title() for t in connected_tools])
+            mandatory_note = f"\n🔒 MANDATORY RESTRICTION: You MUST ONLY use these tools: {available_tool_names}\nDo NOT use any other tools.\nIf the user query doesn't match any of these tools, say so.\n"
+        else:
+            # If no tools connected, show all tools but with a note
+            tools = all_tools
+            mandatory_note = "\n⚠️ No tools connected yet. All tools available.\n"
+        
         tools_json = json.dumps([
             {
                 "name": tool["name"],
@@ -346,7 +359,7 @@ async def chat(request: Dict):
             for tool in tools
         ], indent=2)
         
-        system_prompt = SYSTEM_PROMPT.format(tools_json=tools_json)
+        system_prompt = SYSTEM_PROMPT.format(tools_json=tools_json) + mandatory_note
         
         # Call LLM
         messages = [{"role": "system", "content": system_prompt}] + chat_history
@@ -379,30 +392,57 @@ async def chat(request: Dict):
         if "tool" in llm_decision:
             tool_name = llm_decision["tool"]
             arguments = llm_decision.get("arguments", {})
-            
+
+            # Block ALL tool execution if no tools are connected
+
+            if not connected_tools:
+                result["tool_call"] = {
+                    "tool": tool_name,
+                    "arguments": arguments
+                }
+                result["tool_result"] = f"❌ No tools are connected. Please connect a tool first."
+                result["final_answer"] = f"You tried to use the '{tool_name}' tool, but no tools are currently connected. Please connect a tool first."
+                chat_history.append({"role": "assistant", "content": llm_response})
+                chat_history.append({"role": "user", "content": result["tool_result"]})
+                # Do NOT call LLM again for a fallback answer
+                return result
+
+            # Enforce: Only allow execution if tool is in connected_tools
+            if tool_name not in connected_tools:
+                result["tool_call"] = {
+                    "tool": tool_name,
+                    "arguments": arguments
+                }
+                result["tool_result"] = f"❌ Tool '{tool_name}' is not connected. Only these tools are allowed: {', '.join(connected_tools)}."
+                result["final_answer"] = f"You tried to use the '{tool_name}' tool, but it is not currently connected. Please connect it first."
+                chat_history.append({"role": "assistant", "content": llm_response})
+                chat_history.append({"role": "user", "content": result["tool_result"]})
+                # Do NOT call LLM again for a fallback answer
+                return result
+
             result["tool_call"] = {
                 "tool": tool_name,
                 "arguments": arguments
             }
-            
+
             # Execute tool via MCP
             tool_result = mcp_client.call_tool(tool_name, arguments)
             result["tool_result"] = tool_result
-            
+
             # Add to history
             chat_history.append({"role": "assistant", "content": llm_response})
             chat_history.append({"role": "user", "content": f"Tool result: {tool_result}"})
-            
+
             # Call LLM again for final answer
             messages = [{"role": "system", "content": system_prompt}] + chat_history
-            
+
             response2 = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=messages,
                 temperature=0.1,
                 response_format={"type": "json_object"}
             )
-            
+
             final_response = response2.choices[0].message.content
             try:
                 final_decision = json.loads(final_response)
@@ -414,6 +454,37 @@ async def chat(request: Dict):
         
         # Handle direct answer
         elif "final_answer" in llm_decision:
+            # STRICTEST ENFORCEMENT: If any tools are connected, only allow answers if the query matches a keyword for a connected tool. Otherwise, block all answers.
+            user_message_lower = user_message.lower().strip()
+            tool_keywords = {
+                'get_current_time': ['what time', 'what date', 'current time', 'current date', 'what is the time'],
+                'calculate': ['calculate', 'compute', '+', '-', '*', '/', 'add', 'subtract', 'multiply', 'divide', 'sum', 'total', 'equals'],
+                'reverse_text': ['reverse', 'reversed'],
+                'count_words': ['count words', 'word count', 'how many words'],
+                'random_number': ['random', 'random number'],
+                'convert_temperature': ['temperature', 'celsius', 'fahrenheit', 'convert'],
+                'email_tool': ['send email', 'send mail', 'email to']
+            }
+            import re
+            if connected_tools:
+                # Only allow answer if query matches a keyword for a connected tool
+                matched_connected = False
+                for tool in connected_tools:
+                    keywords = tool_keywords.get(tool, [])
+                    for keyword in keywords:
+                        regex = re.compile(r'\b' + re.escape(keyword) + r'\b', re.IGNORECASE)
+                        if regex.search(user_message_lower):
+                            matched_connected = True
+                            break
+                    if matched_connected:
+                        break
+                if not matched_connected:
+                    result["final_answer"] = "❌ The requested tool is not connected. Please connect the required tool first."
+                    chat_history.append({"role": "assistant", "content": result["final_answer"]})
+                    return result
+            else:
+                # If no tools are connected, allow answer (all tools available)
+                pass
             result["final_answer"] = llm_decision["final_answer"]
             chat_history.append({"role": "assistant", "content": llm_response})
         
